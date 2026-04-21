@@ -132,10 +132,12 @@ _LOG_ATTACK_PATTERNS = [
                               "invalid user", "failed publickey"]),
     ("privilege_escalation", ["sudo:", "su:", "privilege escalation", "sudoers",
                               "pkexec", "setuid", "setgid"]),
-    ("rootkit",              ["trojan", "trojaned", "rootkit", "backdoor"]),
+    # FIX: trojaned is an INDICATOR, not confirmation - use file_tampering
+    ("file_tampering",       ["trojan", "trojaned", "integrity check", "file changed"]),  # Was "rootkit"
+    ("rootkit",              ["rootkit signature", "confirmed rootkit"]),  # Only for confirmed rootkit
     ("malware",              ["malware", "ransomware", "c2 connection", "command and control"]),
-    ("defense_evasion",      ["avc:", "selinux", "apparmor", "ptrace", "ld_preload",
-                              "disable logging", "clear logs"]),
+    # FIX: selinux alone is NOT defense evasion - requires clear evasion intent
+    ("defense_evasion",      ["avc:", "ptrace", "ld_preload", "disable logging", "clear logs"]),  # Removed selinux/apparmor
     ("lateral_movement",     ["psexec", "wmiexec", "winrm", "ssh lateral", "pass-the-hash",
                               "pass-the-ticket", "mimikatz"]),
     ("exfiltration",         ["data exfil", "large upload", "dns tunnel", "icmp tunnel"]),
@@ -143,6 +145,8 @@ _LOG_ATTACK_PATTERNS = [
                               "/etc/passwd", "union select"]),
     ("network_anomaly",      ["port scan", "nmap", "masscan", "connection refused"]),
     ("account_compromise",   ["accepted password", "session opened for user root", "new session"]),
+    # FIX: Add system_activity for non-malicious system events
+    ("system_activity",      ["selinux:", "apparmor", "netstat", "iptables", "firewall"]),
 ]
 
 _RE_TROJANED = re.compile(r"Trojaned version of file '([^']+)'")
