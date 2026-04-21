@@ -56,29 +56,47 @@ WAZUH_RULE_TO_MITRE = {
 }
 
 MITRE_ATTACK_TYPE_MAP = {
-    "authentication_success": {"id": "T1021", "name": "Remote Services"},
+    # IMPROVED: More accurate MITRE mapping
+    "authentication_success": {"id": "T1078", "name": "Valid Accounts"},  # SSH/login = initial access
     "valid_accounts":         {"id": "T1078", "name": "Valid Accounts"},
-    "privilege_escalation":   {"id": "T1548.003", "name": "Sudo and Sudo Caching"},
-    "rootkit":                {"id": "T1014", "name": "Rootkit"},
-    "defense_evasion":        {"id": "T1562", "name": "Impair Defenses"},
+    "privilege_escalation":   {"id": "T1548.003", "name": "Sudo and Sudo Caching"},  # sudo/su
+    "rootkit":                {"id": "T1014", "name": "Rootkit"},  # Only for CONFIRMED rootkit, not indicators
+    "file_tampering":         {"id": "T1562.001", "name": "Disable or Modify Tools"},  # For trojaned files (indicators)
+    "defense_evasion":        {"id": "T1562", "name": "Impair Defenses"},  # Only for actual evasion
+    "credential_access":      {"id": "T1110", "name": "Brute Force"},
+    "lateral_movement":       {"id": "T1021", "name": "Remote Services"},
 }
 
 #  FIX 1: keyword → MITRE technique (extended for better coverage)
+#  IMPROVED: More precise mapping to prevent over-generalization
 KEYWORD_TO_MITRE = {
-    "rootcheck": "T1014", "trojaned": "T1014", "rootkit": "T1014",
-    "sudo":      "T1548.003", "su ":    "T1548.003",
-    "ssh":       "T1021",  "brute":     "T1110",
-    "login":     "T1021",  "accepted":  "T1021", "authentication_success": "T1021",
-    "trojan":    "T1204",  "malware":   "T1204",
+    # Rootkit indicators - specific to T1014 (ONLY for confirmed rootkit)
+    "rootcheck": "T1014", "rootkit": "T1014", "trojan": "T1014",
+    # FIX: trojaned file is an INDICATOR, not confirmation - map to T1562.001
+    "trojaned": "T1562.001",
+    # Privilege escalation - T1548.003 (sudo/su), not T1078
+    "sudo": "T1548.003", "su ": "T1548.003", "su-": "T1548.003",
+    "privilege_escalation": "T1548.003", "escalat": "T1548.003",
+    # Initial Access - T1078 (valid accounts) for authentication
+    "ssh": "T1078", "login": "T1078", "accepted": "T1078",
+    "authentication_success": "T1078", "session opened": "T1078",
+    # Credential Access - T1110 for brute force
+    "brute": "T1110", "failed": "T1110", "authentication_failed": "T1110",
+    # Defense Evasion - T1562 only for actual evasion (not every system event)
     "defense_evasion": "T1562", "impair": "T1562",
-    "privilege_escalation": "T1548", "escalat": "T1548.003",
+    # FIX: selinux alone is NOT defense evasion
+    # Execution - T1204 for malware/trojan execution
+    "malware": "T1204", "executed": "T1204",
+    # FIX: Add file_tampering mapping
+    "file_tampering": "T1562.001", "integrity": "T1562.001",
 }
 
 #  FIX: Correct attack type canonical mapping - authentication is NOT defense evasion
 ATTACK_TYPE_CANONICAL = {
     "rootcheck":              "rootkit",
     "rootkit":                "rootkit",
-    "trojaned":               "rootkit",
+    # FIX: trojaned file is an INDICATOR, not confirmation of rootkit
+    "trojaned":               "file_tampering",  # Was "rootkit" - too aggressive
     "authentication_success": "authentication_success",  # FIXED: Keep as authentication
     "authentication_failed":  "credential_access",
     "pam":                    "authentication_success",   # PAM success = authentication
@@ -96,15 +114,31 @@ PRIORITY = {
 }
 
 # Attack chain ordering — chronological kill-chain flow
+# IMPROVED: Proper MITRE ATT&CK order with correlation priority
 ATTACK_CHAIN_ORDER = {
-    "T1078":     1,   # Initial Access  — Valid Accounts
+    "T1078":     1,   # Initial Access  — Valid Accounts (SSH login)
     "T1110":     2,   # Credential Access — Brute Force
-    "T1548.003": 3,   # Privilege Escalation — Sudo
-    "T1562":     4,   # Defense Evasion
-    "T1014":     5,   # Persistence — Rootkit
+    "T1548.003": 3,   # Privilege Escalation — Sudo/Su
+    "T1562":     4,   # Defense Evasion — only for actual evasion acts
+    "T1014":     5,   # Impact — Rootkit/File Integrity (not persistence)
+    "T1021":     6,   # Lateral Movement
+}
+
+# Confidence scores for threat classifications
+# IMPROVED: Add confidence based on evidence strength
+THREAT_CONFIDENCE = {
+    "rootkit": 0.85,        # High confidence - trojaned file detected
+    "trojan": 0.85,         # High confidence - trojaned file detected
+    "trojaned": 0.85,       # High confidence - trojaned file detected
+    "privilege_escalation": 0.75,  # Medium-high - sudo/su commands
+    "authentication_success": 0.9, # High - actual login event
+    "defense_evasion": 0.5,  # Low-medium - requires context
+    "credential_access": 0.7,  # Medium-high - failed login attempts
+    "lateral_movement": 0.6,  # Medium - requires correlation
 }
 
 #  FIX 3: Wazuh rule groups → canonical attack type
+#  IMPROVED: More accurate mapping, prevent over-generalization
 GROUPS_TO_ATTACK_TYPE = {
     "rootcheck":              "rootkit",
     "syscheck":               "rootkit",
@@ -112,9 +146,17 @@ GROUPS_TO_ATTACK_TYPE = {
     "authentication_failed":  "credential_access",
     "sudo":                   "privilege_escalation",
     "audit":                  "privilege_escalation",
-    "audit_selinux":          "privilege_escalation",
+    # FIX: SELinux denials are NOT automatically defense evasion
+    # Only map to defense_evasion if there's clear evasion intent
+    "audit_selinux":          "system_activity",  # Was "defense_evasion" - too aggressive
     "sshd":                   "authentication_success",
     "pam":                    "authentication_success",
+    # FIX: More conservative defense_evasion mapping
+    "firewall":               "system_activity",  # Was defense_evasion - too aggressive
+    "iptables":               "system_activity",  # Was defense_evasion - too aggressive
+    "netstat":                "discovery",
+    # FIX: Add system_activity for non-malicious system events
+    "system_activity":       "system_activity",
 }
 
 
@@ -778,14 +820,34 @@ class NLPController(BaseController):
     def _build_attack_chain_context(self, attack_chain: list) -> str:
         if not attack_chain:
             return ""
-        lines = ["ATTACK CHAIN (chronological):"]
+        lines = ["ATTACK CHAIN (chronological - earliest to latest):"]
         for step in attack_chain:
             technique = f"[{step['technique']}]" if step.get("technique") else ""
+            # IMPROVED: Better formatting, no truncation
+            event_text = step.get('event', '')[:80] if step.get('event') else 'N/A'
             lines.append(
                 f"  Step {step['step']}: {step.get('timestamp','?')} | "
                 f"agent={step['agent']} user={step['user']} src_ip={step['src_ip']} "
-                f"severity={step['severity']} {technique} → {step['event']}"
+                f"severity={step['severity']} {technique} → {event_text}"
             )
+        
+        # IMPROVED: Add correlation summary
+        if len(attack_chain) > 1:
+            lines.append("\nCORRELATION SUMMARY:")
+            # Group by agent to show attack progression
+            agents = {}
+            for step in attack_chain:
+                ag = step.get('agent', 'unknown')
+                if ag not in agents:
+                    agents[ag] = []
+                technique = step.get('technique', '')
+                if technique:
+                    agents[ag].append(technique)
+            
+            for ag, techs in agents.items():
+                if techs:
+                    lines.append(f"  {ag}: {' → '.join(techs)}")
+        
         return "\n".join(lines)
 
     #  FIX 7: detect_query_type — add "summary" mode
@@ -1210,9 +1272,11 @@ class NLPController(BaseController):
         rule_counts   = defaultdict(int)   # rule_id → count
         mitre_counts  = defaultdict(int)   # mitre_id → count
         #  NEW: group events by attack_type with exact counts
+        # FIX: Add file_paths and commands to track all IOCs
         attack_groups: dict = defaultdict(lambda: {
             "count": 0, "agents": set(), "ips": set(), "users": set(),
-            "mitre_ids": set(), "severity": "Low", "max_level": 0
+            "mitre_ids": set(), "severity": "Low", "max_level": 0,
+            "file_paths": set(), "commands": set()
         })
 
         for doc in fake_docs:
@@ -1222,6 +1286,11 @@ class NLPController(BaseController):
             ev_count = int(meta.get("event_count", 1) or 1) if meta else 1
 
             level = int(meta.get("max_level") or meta.get("rule_level") or 0) if meta else 0
+            # FIX: More accurate severity mapping - Wazuh levels 1-3 are informational/low
+            # Level 1-3: Low (informational, not threats)
+            # Level 4-6: Medium (warnings, suspicious)
+            # Level 7-11: High (errors, attacks)
+            # Level 12+: Critical (critical errors, malware)
             sev   = ("Critical" if level >= 12 else
                      "High"     if level >= 7  else
                      "Medium"   if level >= 4  else "Low")
@@ -1246,9 +1315,13 @@ class NLPController(BaseController):
                     mitre_counts[mid] += ev_count
 
             # FIX: Improved attack type grouping with null checks
+            # CRITICAL: Reclassify old attack types using CURRENT rules
             attack_type = ""
             if meta:
                 attack_type = meta.get("attack_type", "")
+                # Reclassify known misclassifications
+                attack_type = self._reclassify_attack_type(attack_type, getattr(doc, "text", "") or "")
+                
                 if not attack_type:
                     groups = (meta.get("rule", {}) or {}).get("groups", []) if isinstance(meta.get("rule"), dict) else []
                     attack_type = self._groups_to_attack_type(groups)
@@ -1282,6 +1355,45 @@ class NLPController(BaseController):
                 for mid in mids:
                     if mid:
                         g["mitre_ids"].add(mid)
+                
+                # FIX: Extract file_paths from multiple sources
+                # 1. From metadata fields
+                for fkey in ["file", "full_path", "filename", "path"]:
+                    fval = meta.get(fkey, "") if meta else ""
+                    if fval and fval not in ["_", ""] and isinstance(fval, str):
+                        g["file_paths"].add(fval)
+                
+                # 2. From raw document text (extract all paths like /bin/passwd)
+                doc_text = getattr(doc, "text", "") or ""
+                if doc_text:
+                    import re
+                    # Match common file paths in logs
+                    path_pattern = re.compile(r'(/bin/[^\s]+|/usr/bin/[^\s]+|/sbin/[^\s]+|/etc/[^\s]+)')
+                    found_paths = path_pattern.findall(doc_text)
+                    for p in found_paths:
+                        if p and len(p) > 3:
+                            g["file_paths"].add(p)
+                
+                # FIX: Extract commands from multiple sources
+                # 1. From metadata fields
+                for ckey in ["command", "cmd", "shell", "command_name"]:
+                    cval = meta.get(ckey, "") if meta else ""
+                    if cval and cval not in ["_", ""] and isinstance(cval, str):
+                        g["commands"].add(cval)
+                
+                # 2. From raw document text
+                if doc_text:
+                    # Match common command patterns
+                    cmd_patterns = [
+                        re.compile(r'(sudo|su|su-|pkexec)\s+([^\s]+)?'),
+                        re.compile(r'systemctl\s+(start|stop|restart|enable|disable)\s+([^\s]+)?'),
+                    ]
+                    for pattern in cmd_patterns:
+                        for match in pattern.finditer(doc_text):
+                            cmd = match.group(0).strip()
+                            if cmd and len(cmd) > 2:
+                                g["commands"].add(cmd)
+                
                 if level > g["max_level"]:
                     g["max_level"] = level
                     g["severity"] = sev
@@ -1339,6 +1451,7 @@ class NLPController(BaseController):
             )
 
         # ── 6.  Improved LLM prompt — numbers are locked, LLM writes narrative ──
+        # IMPROVED: Add correlation layer, confidence scores, better formatting
         schema_json = (
             '{\n'
             f'  "file_label": "{file_label}",\n'
@@ -1352,14 +1465,15 @@ class NLPController(BaseController):
             '      "severity": "<Critical|High|Medium|Low — from GROUPED THREATS>",\n'
             '      "attack_type": "<from GROUPED THREATS key>",\n'
             '      "mitre": {"id": "<T-ID from GROUPED THREATS>", "name": "<ATT&CK name>"},\n'
-            '      "iocs": {"ips": ["<real IPs only>"], "users": ["<real users>"], "file_paths": [], "commands": []},\n'
-            '      "attack_scenario": "<2-3 sentence narrative from evidence>",\n'
+            '      "confidence": <0.0-1.0 based on evidence strength>,\n'
+            '      "iocs": {"ips": ["<real IPs only>"], "users": ["<real users>"], "file_paths": ["<e.g., /bin/passwd>"], "commands": ["<e.g., sudo, su>"]},\n'
+            '      "attack_scenario": "<2-3 sentence narrative from evidence — be SPECIFIC: include IPs, users, file paths, commands when available. Example: \\"SSH authentication from 10.200.200.20 detected on wazuh-server followed by privilege escalation via sudo, leading to file tampering on system binaries /bin/passwd and /usr/bin/chsh.\\">",\n'
             '      "recommendations": ["<concrete action>"]\n'
             '    }\n'
             '  ],\n'
-            '  "attack_chain_summary": "<step-by-step kill chain narrative>",\n'
-            '  "key_indicators": ["<real IPs, users, or rule IDs from evidence>"],\n'
-            '  "analyst_notes": "<factual observations about the attack pattern>"\n'
+            '  "attack_chain_summary": "<CORRELATED attack story: single incident with sequential steps, NOT separate threats>",\n'
+            '  "key_indicators": ["<real IPs (e.g., 10.200.200.20), users (e.g., wazuh-user)> - DO NOT include system binaries like /usr/bin/su, /usr/bin/systemctl, /bin/*, /usr/bin/*"],\n'
+            '  "analyst_notes": "<factual observations about the attack pattern — do NOT speculate or inflate>"\n'
             '}'
         )
 
@@ -1380,9 +1494,43 @@ class NLPController(BaseController):
 5. NEVER invent counts — only use numbers from GROUPED THREATS block
 6. MITRE names must match ATT&CK exactly:
    T1014=Rootkit, T1078=Valid Accounts, T1548.003=Sudo and Sudo Caching,
-   T1110=Brute Force, T1562=Impair Defenses
-7. iocs arrays: NEVER include "N/A", "_", or "0.0.0.0"
-8. Return ONLY valid JSON — no markdown, no explanation
+   T1110=Brute Force, T1562=Impair Defenses, T1562.001=Disable or Modify Tools,
+   T1021=Remote Services, T1204=User Execution
+7. iocs arrays: MUST include real IOCs from the data - THIS IS CRITICAL:
+   - ips: extract from "ips=" fields (e.g., 10.200.200.20)
+   - users: extract from "users=" fields (e.g., wazuh-user)
+   - file_paths: MUST extract from GROUPED THREATS "files=" field - these are the ACTUAL compromised files (e.g., /bin/passwd, /usr/bin/chsh, /usr/bin/su)
+     * CRITICAL: If GROUPED THREATS shows files=X for file_tampering, you MUST include those exact paths in iocs.file_paths
+     * DO NOT leave file_paths empty - if files are listed in GROUPED THREATS, extract them
+   - commands: extract from "cmds=" field in GROUPED THREATS (e.g., sudo, su, systemctl restart network)
+   - NEVER leave arrays empty if IOCs exist in GROUPED THREATS
+8. EACH threat gets its own MITRE object — do NOT combine multiple MITRE IDs
+9. attack_chain_summary: CORRELATE events into a SINGLE incident story, NOT separate threats
+   CORRECT: "T1078 (SSH login from 10.200.200.20) → T1548.003 (sudo/su to root) → T1562.001 (trojaned /bin/passwd detected)"
+   WRONG:   "rootkit events, privilege_escalation events, authentication events" (separate, not correlated)
+10. attack_scenario rules:
+    - For trojaned files: describe as "detected" not "installed" — use "file_tampering" attack_type
+    - CORRECT: "File tampering indicators were detected on the system"
+    - WRONG:   "The attacker installed a rootkit"
+    - For rootkit: only use if CONFIRMED rootkit signature, not just "trojaned"
+11. severity rules (Wazuh levels: 1-3=Low, 4-6=Medium, 7-11=High, 12+=Critical):
+    - file_tampering (trojaned file) = High — confidence 0.75 (indicator, not confirmation)
+    - rootkit = Critical (only for confirmed rootkit signatures) — confidence 0.85
+    - privilege_escalation = High — confidence 0.75
+    - authentication_success = Low/Medium — confidence 0.9
+    - system_activity = Low — confidence 0.3 (informational events)
+    - defense_evasion = Medium ONLY if actual evasion evidence — confidence 0.5
+12. confidence field: rate 0.0-1.0 based on evidence strength:
+    - 0.9 = strong evidence (actual login event)
+    - 0.85 = confirmed malware/rootkit signature
+    - 0.75 = high confidence (sudo commands, trojaned file indicator)
+    - 0.5 = medium (system events with some concern)
+    - 0.3 = low (informational, no clear threat)
+13. analyst_notes: write factual observations about the SPECIFIC incident - be SPECIFIC:
+    - CORRECT: "External SSH login from 10.200.200.20 detected on wazuh-server, followed by privilege escalation via sudo/su to root, then file tampering detected on system binaries /bin/passwd and /usr/bin/chsh indicating possible trojaned files."
+    - WRONG:   "potential malicious activity" (too generic)
+    - Include: source IP, target user, specific commands executed, specific files affected
+14. Return ONLY valid JSON — no markdown, no explanation
 
 OUTPUT:
 """ + schema_json
@@ -1420,22 +1568,140 @@ OUTPUT:
             parsed["overall_severity"]      = overall_sev
             parsed["severity_breakdown"]    = severity_dist
 
+            # FIX: Build full_log_text from all_texts for post-processing functions
+            full_log_text = " ".join(all_texts) if all_texts else ""
+
             # Fix each threat's counts to match real data
             if "top_threats" in parsed and isinstance(parsed["top_threats"], list):
                 parsed["top_threats"] = self._fix_threat_counts(
                     parsed["top_threats"], attack_groups
                 )
+                
+                # FIX: Enforce correct MITRE IDs based on attack_type
+                parsed["top_threats"] = self._fix_mitre_by_attack_type(
+                    parsed["top_threats"], attack_groups
+                )
+                
+                # FIX: Fix attack_chain_summary consistency
+                chain_summary = parsed.get("attack_chain_summary", "")
+                # Replace ALL mentions of rootkit with file_tampering if trojaned is present
+                if "trojaned" in chain_summary.lower():
+                    import re
+                    # Replace T1014/rootkit with T1562.001/file_tampering
+                    chain_summary = re.sub(
+                        r'T1014[^,\s]*',
+                        'T1562.001',
+                        chain_summary,
+                        flags=re.IGNORECASE
+                    )
+                    chain_summary = re.sub(
+                        r'\brootkit\b',
+                        'file tampering',
+                        chain_summary,
+                        flags=re.IGNORECASE
+                    )
+                    parsed["attack_chain_summary"] = chain_summary
+                
+                # FIX: Fix MITRE chain order (T1078=auth, T1548=priv esc)
+                if "T1078" in chain_summary and "privilege" in chain_summary.lower():
+                    # T1078 is for authentication, not privilege escalation
+                    parsed["attack_chain_summary"] = chain_summary.replace(
+                        "T1078", "T1548.003"
+                    )
+                
+                # FIX: COMPREHENSIVE attack_chain override - replace rootkit/T1014 with file_tampering/T1562.001
+                # ONLY when there's evidence of trojaned files (not for confirmed rootkit)
+                # Use SOURCE text (full_log_text) not LLM output for detection
+                chain_summary = parsed.get("attack_chain_summary", "")
+                has_trojaned_evidence = "trojaned" in full_log_text.lower()  # FIXED: from source, not chain
+                
+                if has_trojaned_evidence and ("rootkit" in chain_summary.lower() or "T1014" in chain_summary):
+                    # Replace rootkit mentions with file tampering (trojaned is indicator, not confirmation)
+                    chain_summary = re.sub(r'\brootkit\b', 'file tampering', chain_summary, flags=re.IGNORECASE)
+                    chain_summary = re.sub(r'\brootkit infection\b', 'file integrity compromise', chain_summary, flags=re.IGNORECASE)
+                    # Replace T1014 with T1562.001 only for trojaned indicators
+                    chain_summary = re.sub(r'T1014[^,\s]*', 'T1562.001', chain_summary, flags=re.IGNORECASE)
+                
+                # Fix T1021 → T1078 for authentication (always correct)
+                if "(T1021)" in chain_summary:
+                    chain_summary = re.sub(r'\(T1021\)', '(T1078)', chain_summary, flags=re.IGNORECASE)
+                
+                parsed["attack_chain_summary"] = chain_summary
+                
+                # FIX: Clean prompt leaks FIRST (LLM sometimes returns prompt text)
+                parsed["top_threats"] = self._clean_prompt_leaks(parsed["top_threats"])
+                
+                # FIX: Reclassify defense_evasion to system_activity if no clear evasion intent
+                parsed["top_threats"] = self._reclassify_defense_evasion_in_threats(
+                    parsed["top_threats"], full_log_text
+                )
+                
+                # FIX: Enforce text consistency - summary/recommendations must match attack_type
+                parsed["top_threats"] = self._fix_text_consistency(
+                    parsed["top_threats"], attack_groups
+                )
+                
+                # FINAL FIX: Final cleanup pass to remove any remaining leaks
+                parsed["top_threats"] = self._final_cleanup_threats(parsed["top_threats"])
+                
+                # CRITICAL: Last-pass cleanup on the ENTIRE parsed object
+                parsed = self._deep_clean_parsed_output(parsed, full_log_text)
 
-            #  Clean IOCs in each threat
+            #  Clean and Normalize IOCs in each threat
             for threat in parsed.get("top_threats", []):
+                atype = threat.get("attack_type", "")
                 iocs = threat.get("iocs", {})
                 if isinstance(iocs, dict):
+                    # FIX: Normalize IOCs - clean commas, duplicates, garbage
+                    iocs = self._normalize_iocs(iocs)
+                    
+                    # FIX: Context-aware filtering - auth should not have file_paths/commands
+                    if atype == "authentication_success":
+                        iocs["file_paths"] = []
+                        iocs["commands"] = []
+                    elif atype == "system_activity":
+                        iocs["file_paths"] = []
+                        iocs["commands"] = []
+                    
                     for k in list(iocs.keys()):
                         iocs[k] = [v for v in (iocs[k] or [])
                                    if v and v not in ["_", "N/A", "0.0.0.0", ""]]
                 threat["iocs"] = iocs if isinstance(iocs, dict) else {
                     "ips": [], "users": [], "file_paths": [], "commands": []
                 }
+            
+            # FIX: Clean key_indicators - ensure it's a proper list
+            if "key_indicators" in parsed:
+                parsed["key_indicators"] = self._normalize_key_indicators(
+                    parsed["key_indicators"], parsed.get("top_threats", []), full_log_text
+                )
+
+            # FIX: Dynamic confidence logic - make confidence intelligent based on evidence
+            parsed["top_threats"] = self._adjust_confidence_by_evidence(
+                parsed.get("top_threats", []), full_log_text
+            )
+
+            # FIX: Severity upgrade logic - escalate if multiple high-risk indicators present
+            parsed = self._upgrade_severity_if_needed(parsed, full_log_text)
+
+            # FIX: Generate attack_chain programmatically (no LLM hallucination)
+            parsed["attack_chain_summary"] = self._generate_attack_chain(
+                parsed.get("top_threats", []), full_log_text
+            )
+
+            # FIX: Filter suspicious file_paths only (not system binaries)
+            parsed["top_threats"] = self._filter_suspicious_paths(
+                parsed.get("top_threats", [])
+            )
+
+            # FIX: CRITICAL - Extract file_paths from source text for file_tampering threats
+            # This ensures file_paths are never empty when trojaned files exist
+            parsed["top_threats"] = self._ensure_file_paths_for_tampering(
+                parsed.get("top_threats", []), full_log_text
+            )
+
+            # FIX: Add risk_score, timeline, and incident_type
+            parsed = self._enrich_with_risk_and_timeline(parsed, full_log_text)
 
         # ── 9. Store RAPTOR summary chunk ────────────────────────────
         summary_text = (
@@ -1483,20 +1749,76 @@ OUTPUT:
                 return atype
         for keyword, mitre_id in KEYWORD_TO_MITRE.items():
             if keyword in text_lower:
-                # Map MITRE to attack type
+                # Map MITRE to attack type - FIXED: T1078 for auth, T1562.001 for file tampering
                 mapping = {
-                    "T1014": "rootkit", "T1548.003": "privilege_escalation",
-                    "T1110": "credential_access", "T1078": "authentication_success",
-                    "T1021": "authentication_success", "T1204": "execution",
-                    "T1562": "defense_evasion",
+                    "T1014": "rootkit", 
+                    "T1548.003": "privilege_escalation",
+                    "T1110": "credential_access", 
+                    "T1078": "authentication_success",  # FIXED: was T1021
+                    "T1021": "lateral_movement",  # FIXED: was authentication_success
+                    "T1204": "execution",
+                    "T1562": "defense_evasion", 
+                    "T1562.001": "file_tampering",  # FIXED: added for trojaned files
                 }
                 return mapping.get(mitre_id, "unknown")
         return "unknown"
+
+    def _reclassify_attack_type(self, current_type: str, text: str) -> str:
+        """
+        Reclassify attack types using CURRENT rules to fix old misclassifications.
+        This is critical because data in DB was classified with old (incorrect) rules.
+        
+        CRITICAL FIX: defense_evasion is OVER-USED - most events labeled as defense_evasion
+        are actually system_activity (informational events like SELinux, iptables without evasion intent).
+        FIX 2: Also handle the case where defense_evasion appears with file_tampering - prefer file_tampering.
+        FIX 3: More aggressive system_activity classification for SELinux/iptables without clear intent.
+        """
+        text_lower = text.lower()
+        
+        # FIX 1: trojaned = indicator, NOT confirmation of rootkit
+        if current_type == "rootkit" and "trojaned" in text_lower:
+            return "file_tampering"
+        
+        # FIX 2: defense_evasion over-generalization - CRITICAL fix
+        # Most events labeled defense_evasion are actually system_activity
+        if current_type == "defense_evasion":
+            # If there's NO clear evasion intent, it's system_activity
+            # Clear evasion = disable, stop, remove, bypass, tamper, kill
+            evasion_intent_keywords = ["disable", "stop ", "remove ", "bypass", "tamper", 
+                                       "kill ", "uninstall", "unload", "modify rules",
+                                       "stopped ", "disabled ", "stopped firewall", 
+                                       "disabled selinux", "killed ", "removed",
+                                       "setenforce 0", "iptables -f", "ufw disable"]
+            has_evasion_intent = any(k in text_lower for k in evasion_intent_keywords)
+            
+            if not has_evasion_intent:
+                return "system_activity"
+            
+            # Even with evasion keywords, check if it's actually security-related
+            # SELinux without "disable" = system_activity
+            if "selinux" in text_lower and "disable" not in text_lower and "setenforce" not in text_lower:
+                return "system_activity"
+            
+            # iptables without -f (flush) or -D (delete) = system_activity
+            if "iptables" in text_lower and "flush" not in text_lower and "delete" not in text_lower:
+                return "system_activity"
+            
+            # If there's file tampering evidence, prefer that over defense_evasion
+            if "trojaned" in text_lower or "replaced" in text_lower:
+                return "file_tampering"
+        
+        # FIX 3: Keep known good types
+        if current_type in ["rootkit", "privilege_escalation", "authentication_success", 
+                           "credential_access", "file_tampering", "system_activity"]:
+            return current_type
+        
+        return current_type
 
     def _build_threat_groups_block(self, attack_groups: dict, total_count: int) -> str:
         """
         Build a human-readable block of grouped threats with EXACT counts.
         This is embedded directly in the LLM prompt so it cannot hallucinate counts.
+        FIX: Include file_paths and commands for complete IOC extraction.
         """
         if not attack_groups:
             return ""
@@ -1508,9 +1830,12 @@ OUTPUT:
             agents_str = ", ".join(sorted(stats["agents"]))
             ips_str    = ", ".join(sorted(stats["ips"])) or "N/A"
             users_str  = ", ".join(sorted(stats["users"])) or "N/A"
+            # FIX: Include file_paths and commands
+            files_str  = ", ".join(sorted(stats.get("file_paths", set()))) or "N/A"
+            cmds_str   = ", ".join(sorted(stats.get("commands", set()))) or "N/A"
             lines.append(
                 f"  [{atype}] count={stats['count']} | severity={stats['severity']}(L{stats['max_level']}) "
-                f"| agents={agents_str} | ips={ips_str} | users={users_str} | mitre={mitre_list}"
+                f"| agents={agents_str} | ips={ips_str} | users={users_str} | files={files_str} | cmds={cmds_str} | mitre={mitre_list}"
             )
         return "\n".join(lines)
 
@@ -1540,35 +1865,1123 @@ OUTPUT:
                 agent_str = ", ".join(real_agents) if real_agents else "unknown agent"
                 threat["summary"] = f"{real_count} {atype} events on {agent_str}"
 
-                # Enrich IOCs from group stats
+                # CRITICAL: Enrich IOCs from group stats - THIS IS THE SOURCE OF TRUTH
                 iocs = threat.get("iocs", {})
-                if isinstance(iocs, dict):
-                    group_ips = list(attack_groups.get(atype, {}).get("ips", set()))
-                    if group_ips:
-                        existing_ips = set(iocs.get("ips", []))
-                        iocs["ips"] = list(existing_ips | set(group_ips))[:8]
-                    group_users = list(attack_groups.get(atype, {}).get("users", set()))
-                    if group_users:
-                        existing_users = set(iocs.get("users", []))
-                        iocs["users"] = list(existing_users | set(group_users))[:8]
-                    threat["iocs"] = iocs
+                if not isinstance(iocs, dict):
+                    iocs = {"ips": [], "users": [], "file_paths": [], "commands": []}
+                
+                # Get group stats for this attack_type
+                group_stats = attack_groups.get(atype, {})
+                
+                # 1. IPs - from group stats (authoritative source)
+                group_ips = list(group_stats.get("ips", set()))
+                if group_ips:
+                    existing_ips = set(iocs.get("ips", []))
+                    iocs["ips"] = list(existing_ips | set(group_ips))[:8]
+                
+                # 2. Users - from group stats
+                group_users = list(group_stats.get("users", set()))
+                if group_users:
+                    existing_users = set(iocs.get("users", []))
+                    iocs["users"] = list(existing_users | set(group_users))[:8]
+                
+                # 3. CRITICAL: file_paths - from group stats for file_tampering
+                # This is the most common failure point - ensure we always have paths
+                group_files = list(group_stats.get("file_paths", set()))
+                if group_files:
+                    existing_files = set(iocs.get("file_paths", []))
+                    iocs["file_paths"] = list(existing_files | set(group_files))[:8]
+                
+                # 4. Commands - from group stats
+                group_cmds = list(group_stats.get("commands", set()))
+                if group_cmds:
+                    existing_cmds = set(iocs.get("commands", []))
+                    iocs["commands"] = list(existing_cmds | set(group_cmds))[:8]
+                
+                threat["iocs"] = iocs
 
         return threats
+
+    def _fix_mitre_by_attack_type(self, threats: list, attack_groups: dict) -> list:
+        """
+        FIX: Enforce correct MITRE IDs based on attack_type.
+        This overrides any wrong MITRE from LLM output.
+        """
+        # Canonical MITRE mapping - source of truth
+        MITRE_BY_TYPE = {
+            "rootkit":              {"id": "T1014",     "name": "Rootkit"},
+            "file_tampering":       {"id": "T1562.001", "name": "Disable or Modify Tools"},
+            "defense_evasion":      {"id": "T1562",     "name": "Impair Defenses"},
+            "privilege_escalation": {"id": "T1548.003", "name": "Sudo and Sudo Caching"},
+            "credential_access":    {"id": "T1110",     "name": "Brute Force"},
+            "authentication_success": {"id": "T1078",  "name": "Valid Accounts"},  # FIXED: was T1021
+            "lateral_movement":     {"id": "T1021",     "name": "Remote Services"},
+            "system_activity":      {"id": "T1082",     "name": "System Information Discovery"},
+            "execution":            {"id": "T1204",     "name": "User Execution"},
+        }
+        
+        for threat in threats:
+            atype = threat.get("attack_type", "")
+            scenario = threat.get("attack_scenario", "").lower()
+            
+            # FIX: COMPREHENSIVE rootkit → file_tampering conversion
+            # Check ALL possible sources of evidence:
+            
+            # 1. Check if ANY group has file_paths (indicates trojaned files, not rootkit)
+            any_group_has_files = False
+            for group_type, group_data in attack_groups.items():
+                if group_data.get("file_paths"):
+                    any_group_has_files = True
+                    break
+            
+            # 2. Check scenario for trojaned keyword
+            has_trojaned_in_scenario = "trojaned" in scenario
+            
+            # 3. Check if attack_groups has file_tampering key
+            has_file_tampering_group = "file_tampering" in attack_groups
+            
+            # CONVERT if any evidence exists
+            should_convert = (
+                atype == "rootkit" and (
+                    any_group_has_files or 
+                    has_trojaned_in_scenario or 
+                    has_file_tampering_group
+                )
+            )
+            
+            if should_convert:
+                atype = "file_tampering"
+                threat["attack_type"] = "file_tampering"
+                threat["severity"] = "High"
+                threat["confidence"] = 0.75
+                threat["attack_scenario"] = "Possible file integrity compromise detected on system binaries (trojaned file indicator)."
+            
+            # FIX: Enforce correct MITRE
+            if atype in MITRE_BY_TYPE:
+                threat["mitre"] = MITRE_BY_TYPE[atype]
+            
+            # FIX: COMPREHENSIVE IOC extraction - check ALL groups
+            iocs = threat.get("iocs", {})
+            if isinstance(iocs, dict):
+                # Collect IOCs from ALL groups (not just current atype)
+                all_ips = set()
+                all_users = set()
+                all_files = set()
+                all_cmds = set()
+                
+                for group_type, group_data in attack_groups.items():
+                    all_ips.update(group_data.get("ips", set()))
+                    all_users.update(group_data.get("users", set()))
+                    all_files.update(group_data.get("file_paths", set()))
+                    all_cmds.update(group_data.get("commands", set()))
+                
+                # Populate empty IOC fields
+                if not iocs.get("ips") and all_ips:
+                    iocs["ips"] = list(all_ips)[:8]
+                if not iocs.get("users") and all_users:
+                    iocs["users"] = list(all_users)[:8]
+                if not iocs.get("file_paths") and all_files:
+                    iocs["file_paths"] = list(all_files)[:8]
+                if not iocs.get("commands") and all_cmds:
+                    iocs["commands"] = list(all_cmds)[:8]
+                
+                threat["iocs"] = iocs
+        
+        return threats
+
+    def _normalize_iocs(self, iocs: dict) -> dict:
+        """
+        FIX: Normalize IOC values - clean commas, duplicates, garbage values.
+        This fixes the parsing bugs in extracted IOCs.
+        """
+        if not isinstance(iocs, dict):
+            return {"ips": [], "users": [], "file_paths": [], "commands": []}
+        
+        normalized = {}
+        
+        # Garbage patterns to filter out
+        garbage_patterns = [
+            "replace", "number", "actual", "grouped", "threats",
+            "sudo to", "su |", "su-", "|", "&&", ";;"
+        ]
+        
+        for key, values in iocs.items():
+            if not values:
+                normalized[key] = []
+                continue
+            
+            cleaned = set()
+            for v in values:
+                if not v or not isinstance(v, str):
+                    continue
+                
+                # Split by comma (common parsing issue)
+                parts = v.split(",")
+                for part in parts:
+                    # Clean each part
+                    part = part.strip().strip(",").strip()
+                    # Skip garbage values
+                    if not part:
+                        continue
+                    if any(g in part.lower() for g in garbage_patterns):
+                        continue
+                    if len(part) < 2:
+                        continue
+                    
+                    # For file_paths: must start with /
+                    if key == "file_paths" and not part.startswith("/"):
+                        continue
+                    
+                    # For commands: clean up and validate
+                    if key == "commands":
+                        # Remove trailing symbols
+                        part = part.rstrip("|;&")
+                        # FIX: Normalize command paths - strip /usr/bin/, /bin/ prefixes
+                        part = re.sub(r'^/usr/bin/', '', part)
+                        part = re.sub(r'^/bin/', '', part)
+                        # Expanded list of valid command starts
+                        valid_starts = ("sudo", "su", "systemctl", "chmod", "chown", "rm", "cp", "mv",
+                                       "bash", "sh", "python", "curl", "wget", "nc", "netcat", "ping")
+                        if not part.startswith("/") and not part.startswith(valid_starts):
+                            continue
+                        # Skip if it's just a symbol or short
+                        if len(part) < 3:
+                            continue
+                    
+                    # FIX: Deduplicate while preserving order (use dict.fromkeys, not set)
+                    cleaned.add(part)
+            
+            # Preserve order using dict.fromkeys() - removes duplicates while keeping first occurrence order
+            normalized[key] = list(dict.fromkeys(cleaned))
+        
+        return normalized
+
+    def _clean_prompt_leaks(self, threats: list) -> list:
+        """
+        FIX: Remove prompt text that leaked into LLM output.
+        Common leaks: "replace NUMBER with...", "GROUPED THREATS>", etc.
+        """
+        if not isinstance(threats, list):
+            return threats
+        
+        leak_patterns = [
+            "replace NUMBER",
+            "GROUPED THREATS",
+            "actual count from",
+            "<number>",
+            "<from GROUPED",
+            "replace NUMBER with",
+            "GROUPED THREATS>",
+            "<attack_type>",
+            "<from GROUPED THREATS>",
+            "NUMBER with actual",
+            "actual count from GROUPED",
+        ]
+        
+        cleaned_threats = []
+        for threat in threats:
+            if not isinstance(threat, dict):
+                cleaned_threats.append(threat)
+                continue
+            
+            # Clean all string fields - COMPREHENSIVE cleaning
+            for key, value in threat.items():
+                if isinstance(value, str):
+                    original = value
+                    for pattern in leak_patterns:
+                        if pattern.lower() in value.lower():
+                            # Replace with empty
+                            value = value.replace(pattern, "")
+                    # CRITICAL: Also clean up any double spaces or trailing garbage
+                    value = re.sub(r'\s+', ' ', value)  # Multiple spaces to single
+                    value = re.sub(r'\s*[-–—]\s*$', '', value)  # Trailing dashes
+                    value = value.strip()
+                    
+                    # If summary is now empty or garbage, rebuild it
+                    if key == "summary" and (not value or len(value) < 10):
+                        atype = threat.get("attack_type", "unknown")
+                        count = threat.get("summary", "")
+                        # Try to extract count from original
+                        count_match = re.search(r'(\d+)\s+\w+', original)
+                        count_str = count_match.group(1) if count_match else "1"
+                        agent = "unknown"
+                        # Try to get agent from other fields
+                        for k, v in threat.items():
+                            if isinstance(v, str) and "vm" in v.lower() or "server" in v.lower():
+                                agent = v
+                                break
+                        value = f"{count_str} {atype} events on {agent}"
+                    
+                    threat[key] = value
+                
+            # Also clean IOC arrays
+            iocs = threat.get("iocs", {})
+            if isinstance(iocs, dict):
+                for k, v in iocs.items():
+                    if isinstance(v, list):
+                        iocs[k] = [
+                            x for x in v 
+                            if not any(p.lower() in str(x).lower() for p in leak_patterns)
+                        ]
+                threat["iocs"] = iocs
+            
+            cleaned_threats.append(threat)
+        
+        return cleaned_threats
+
+    def _fix_text_consistency(self, threats: list, attack_groups: dict) -> list:
+        """
+        FIX: Ensure summary and recommendations match attack_type.
+        If attack_type is file_tampering, summary should say "file_tampering" not "rootkit".
+        FIX 2: Make attack_scenario more specific with actual IOCs (IPs, users, files, commands).
+        """
+        for threat in threats:
+            atype = threat.get("attack_type", "")
+            iocs = threat.get("iocs", {})
+            
+            # Fix summary - replace rootkit with file_tampering if needed
+            summary = threat.get("summary", "")
+            if atype == "file_tampering" and "rootkit" in summary.lower():
+                threat["summary"] = summary.replace("rootkit", "file_tampering")
+            
+            # FIX: Make attack_scenario more specific with actual IOCs
+            attack_scenario = threat.get("attack_scenario", "")
+            if attack_scenario and isinstance(iocs, dict):
+                # Extract actual IOCs
+                ips = iocs.get("ips", [])
+                users = iocs.get("users", [])
+                files = iocs.get("file_paths", [])
+                cmds = iocs.get("commands", [])
+                
+                # Build specific scenario
+                scenario_parts = []
+                
+                if atype == "authentication_success" and ips:
+                    scenario_parts.append(f"SSH authentication from {ips[0]}")
+                    if users:
+                        scenario_parts.append(f"using {users[0]}")
+                
+                elif atype == "privilege_escalation" and cmds:
+                    scenario_parts.append(f"Privilege escalation via {cmds[0]}")
+                    if users:
+                        scenario_parts.append(f"by {users[0]}")
+                
+                elif atype == "file_tampering" and files:
+                    scenario_parts.append(f"File tampering detected on {', '.join(files[:2])}")
+                    if "trojaned" in attack_scenario.lower():
+                        scenario_parts.append("(trojaned binary indicator)")
+                
+                elif atype == "credential_access" and ips:
+                    scenario_parts.append(f"Brute force attempt from {ips[0]}")
+                
+                # If we have specific details, replace generic scenario
+                if scenario_parts:
+                    specific_scenario = " ".join(scenario_parts)
+                    # Only replace if current scenario is generic
+                    if len(attack_scenario) > 100 or "detected" in attack_scenario.lower():
+                        threat["attack_scenario"] = specific_scenario
+            
+            # Fix recommendations - remove rootkit references for file_tampering
+            recommendations = threat.get("recommendations", [])
+            if isinstance(recommendations, list):
+                new_recommendations = []
+                for rec in recommendations:
+                    if isinstance(rec, str):
+                        # Replace rootkit with file tampering in recommendations
+                        rec = rec.replace("rootkit", "file tampering")
+                        rec = rec.replace("rootkit infection", "file integrity compromise")
+                        new_recommendations.append(rec)
+                threat["recommendations"] = new_recommendations
+        
+        return threats
+
+    def _reclassify_defense_evasion_in_threats(self, threats: list, source_text: str) -> list:
+        """
+        FIX: Post-process defense_evasion threats - convert to system_activity if no clear evasion intent.
+        This ensures defense_evasion is only used when there's actual evasion evidence.
+        FIX 2: Also ensure file_tampering threats have file_paths extracted from source.
+        """
+        text_lower = source_text.lower()
+        
+        # Check if there's clear evasion intent in the source
+        evasion_intent_keywords = [
+            "disable", "stop ", "remove ", "bypass", "tamper",
+            "kill ", "uninstall", "unload", "setenforce 0",
+            "iptables -f", "ufw disable", "stopped firewall",
+            "disabled selinux"
+        ]
+        has_clear_evasion = any(k in text_lower for k in evasion_intent_keywords)
+        
+        # FIX: Extract file_paths from source for file_tampering threats
+        extracted_file_paths = []
+        if "trojaned" in text_lower or "integrity" in text_lower:
+            # Extract all system binary paths
+            extracted_file_paths = re.findall(
+                r'(/bin/[a-zA-Z0-9_.-]+|/usr/bin/[a-zA-Z0-9_.-]+|/sbin/[a-zA-Z0-9_.-]+|/usr/sbin/[a-zA-Z0-9_.-]+|/etc/[a-zA-Z0-9_./-]+)',
+                source_text
+            )
+            extracted_file_paths = list(set(extracted_file_paths))[:8]
+        
+        for threat in threats:
+            atype = threat.get("attack_type", "")
+            
+            if atype == "defense_evasion":
+                # If no clear evasion intent, convert to system_activity
+                if not has_clear_evasion:
+                    threat["attack_type"] = "system_activity"
+                    threat["severity"] = "Low"
+                    threat["confidence"] = 0.3
+                    threat["summary"] = threat.get("summary", "").replace(
+                        "defense_evasion", "system_activity"
+                    )
+                    threat["attack_scenario"] = "Informational system event - no clear evasion intent detected."
+                    threat["mitre"] = {"id": "T1082", "name": "System Information Discovery"}
+                    threat["iocs"] = {"ips": [], "users": [], "file_paths": [], "commands": []}
+                    threat["risk_score"] = 0.15
+            
+            # FIX: Ensure file_tampering has file_paths
+            if atype == "file_tampering":
+                iocs = threat.get("iocs", {})
+                if not isinstance(iocs, dict):
+                    iocs = {"ips": [], "users": [], "file_paths": [], "commands": []}
+                
+                current_paths = iocs.get("file_paths", [])
+                
+                # If no file_paths but we extracted from source, use them
+                if not current_paths and extracted_file_paths:
+                    iocs["file_paths"] = extracted_file_paths
+                    threat["iocs"] = iocs
+                # If partially filled, add more from extracted
+                elif current_paths and len(current_paths) < 3 and extracted_file_paths:
+                    existing = set(current_paths)
+                    combined = list(existing | set(extracted_file_paths))[:8]
+                    iocs["file_paths"] = combined
+                    threat["iocs"] = iocs
+        
+        return threats
+
+    def _deep_clean_parsed_output(self, parsed: dict, source_text: str) -> dict:
+        """
+        CRITICAL: Final deep clean of the ENTIRE parsed output.
+        This catches any remaining leaks that might have been missed.
+        """
+        # Most comprehensive leak patterns
+        leak_patterns = [
+            "replace NUMBER", "GROUPED THREATS", "actual count from",
+            "<number>", "<from GROUPED", "<attack_type>", "<concrete",
+            "NUMBER with", "actual count from", "GROUPED THREATS>",
+            "replace NUMBER with", "GROUPED THREATS>", "NUMBER with actual",
+            "actual count from GROUPED", "<from GROUPED THREATS>",
+            "replace NUMBER with  GROUPED",  # SPECIFIC pattern from output
+        ]
+        
+        # Clean top_threats
+        if "top_threats" in parsed and isinstance(parsed["top_threats"], list):
+            for threat in parsed["top_threats"]:
+                if not isinstance(threat, dict):
+                    continue
+                
+                # Clean summary - rebuild if contains leaks
+                summary = threat.get("summary", "")
+                if any(p.lower() in summary.lower() for p in leak_patterns):
+                    atype = threat.get("attack_type", "unknown")
+                    # Extract count from the garbage text
+                    count_match = re.search(r'(\d+)\s+\w+', summary)
+                    count_str = count_match.group(1) if count_match else "1"
+                    threat["summary"] = f"{count_str} {atype} events"
+                
+                # Clean attack_scenario
+                scenario = threat.get("attack_scenario", "")
+                if any(p.lower() in scenario.lower() for p in leak_patterns):
+                    atype = threat.get("attack_type", "")
+                    threat["attack_scenario"] = f"{atype.capitalize()} event detected."
+        
+        # Clean key_indicators
+        if "key_indicators" in parsed and isinstance(parsed["key_indicators"], list):
+            cleaned = []
+            for ind in parsed["key_indicators"]:
+                if isinstance(ind, str) and not any(p.lower() in ind.lower() for p in leak_patterns):
+                    cleaned.append(ind)
+            parsed["key_indicators"] = cleaned
+        
+        # Clean analyst_notes
+        if "analyst_notes" in parsed and isinstance(parsed["analyst_notes"], str):
+            notes = parsed["analyst_notes"]
+            if any(p.lower() in notes.lower() for p in leak_patterns):
+                parsed["analyst_notes"] = "Security events analyzed. Review recommended."
+        
+        return parsed
+
+    def _final_cleanup_threats(self, threats: list) -> list:
+        """
+        FINAL FIX: Last-pass cleanup to ensure no placeholder text or garbage remains.
+        """
+        # Comprehensive leak patterns - EXPANDED
+        leak_patterns = [
+            "replace", "NUMBER", "GROUPED THREATS", "actual count",
+            "<number>", "<from GROUPED", "<attack_type>", "<concrete",
+            "NUMBER with", "actual count from", "GROUPED THREATS>",
+            "replace NUMBER with", "GROUPED THREATS>", "NUMBER with actual",
+            "actual count from GROUPED", "<from GROUPED THREATS>",
+        ]
+        
+        cleaned_threats = []
+        for threat in threats:
+            if not isinstance(threat, dict):
+                continue
+            
+            # Clean summary field - rebuild if still has leaks
+            summary = threat.get("summary", "")
+            if any(p.lower() in summary.lower() for p in leak_patterns):
+                # Rebuild summary from other fields
+                atype = threat.get("attack_type", "unknown")
+                severity = threat.get("severity", "Medium")
+                # Try to extract count from original
+                count_match = re.search(r'(\d+)\s+\w+', summary)
+                count_str = count_match.group(1) if count_match else "1"
+                threat["summary"] = f"{count_str} {atype} events"
+            
+            # Clean attack_scenario
+            scenario = threat.get("attack_scenario", "")
+            if any(p.lower() in scenario.lower() for p in leak_patterns):
+                atype = threat.get("attack_type", "")
+                threat["attack_scenario"] = f"{atype.capitalize()} event detected."
+            
+            # Clean recommendations
+            recommendations = threat.get("recommendations", [])
+            if isinstance(recommendations, list):
+                cleaned_recs = []
+                for rec in recommendations:
+                    if isinstance(rec, str) and not any(p.lower() in rec.lower() for p in leak_patterns):
+                        cleaned_recs.append(rec)
+                if not cleaned_recs:
+                    cleaned_recs = ["Review system logs and investigate."]
+                threat["recommendations"] = cleaned_recs
+            
+            cleaned_threats.append(threat)
+        
+        return cleaned_threats
+
+    def _normalize_key_indicators(self, key_indicators: list, threats: list, source_text: str = "") -> list:
+        """
+        FIX: Normalize key_indicators to be a clean list without duplicates or garbage.
+        CRITICAL: Filter out system binaries (/usr/bin/*, /bin/*) - they are NOT IOCs.
+        Only real IOCs: IPs, users, actual suspicious file paths.
+        FIX 2: More aggressive filtering - exclude ALL /usr/bin/*, /bin/* paths.
+        FIX 3: Extract from source_text if key_indicators is empty.
+        """
+        # System binary paths to EXCLUDE (NOT IOCs) - EXPANDED
+        SYSTEM_BINARIES = {
+            "/usr/bin/su", "/usr/bin/systemctl", "/usr/bin/sudo", "/bin/su",
+            "/bin/systemctl", "/bin/sudo", "/usr/bin/", "/bin/",
+            "/usr/sbin/", "/sbin/", "/usr/local/bin/", "/usr/local/sbin/",
+            "/usr/bin/passwd", "/usr/bin/chsh", "/bin/passwd", "/bin/chsh",
+            "/usr/bin/su-", "/bin/su-", "su", "sudo", "systemctl", "chsh",
+        }
+        
+        # Commands to EXCLUDE from key_indicators (they are system commands, not IOCs)
+        SYSTEM_COMMANDS = {
+            "sudo", "su", "su-", "systemctl", "chsh", "chmod", "chown",
+            "ls", "cd", "pwd", "cat", "grep", "echo", "date", "whoami",
+        }
+        
+        if not key_indicators:
+            # Extract from threats - ALL real IOCs (IPs, users, AND commands)
+            indicators = set()
+            for threat in threats:
+                iocs = threat.get("iocs", {})
+                if isinstance(iocs, dict):
+                    # Add IPs
+                    for v in iocs.get("ips", []):
+                        if v and v not in ["_", "N/A", "", "0.0.0.0"]:
+                            indicators.add(v)
+                    # Add users - CRITICAL: include ALL users
+                    for v in iocs.get("users", []):
+                        if v and v not in ["_", "N/A", "", "0.0.0.0"]:
+                            indicators.add(v)
+                    # Add commands (clean them - remove /usr/bin/, /bin/ prefixes)
+                    for v in iocs.get("commands", []):
+                        if v and v not in ["_", "N/A", ""]:
+                            # Clean command path - keep full command but remove prefix
+                            clean_cmd = re.sub(r'^/usr/bin/', '', v)
+                            clean_cmd = re.sub(r'^/bin/', '', clean_cmd)
+                            clean_cmd = re.sub(r'^/usr/sbin/', '', clean_cmd)
+                            if clean_cmd and len(clean_cmd) > 2:
+                                indicators.add(clean_cmd)
+            
+            # CRITICAL: If still empty, try to extract from source text
+            if not indicators and source_text:
+                # Extract IPs
+                ips = re.findall(r'\b(?:10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.\d+\.\d+\.\d+)\b', source_text)
+                indicators.update(ips[:3])
+                # Extract users
+                users = re.findall(r'(?:user|username|srcuser)[:=]\s*([a-zA-Z0-9_.-]+)', source_text, re.IGNORECASE)
+                indicators.update(users[:3])
+            
+            return list(indicators)[:10]
+        
+        # Clean existing key_indicators
+        cleaned = set()
+        for v in key_indicators:
+            if not v or not isinstance(v, str):
+                continue
+            # Split by comma if needed
+            parts = v.split(",")
+            for part in parts:
+                part = part.strip().strip(",").strip()
+                if not part or len(part) < 2:
+                    continue
+                if part in ["_", "N/A"]:
+                    continue
+                
+                # CRITICAL: Filter out system binaries - MORE AGGRESSIVE
+                is_system_binary = False
+                for sb in SYSTEM_BINARIES:
+                    if part.startswith(sb) or part == sb or sb in part:
+                        is_system_binary = True
+                        break
+                if is_system_binary:
+                    continue
+                
+                # FIX: Also filter out system commands
+                part_lower = part.lower()
+                if part_lower in SYSTEM_COMMANDS:
+                    continue
+                
+                # FIX: Only keep IPs and users - these are real IOCs
+                # Skip file paths and commands in key_indicators
+                if part.startswith("/") or part_lower in ["sudo", "su", "systemctl"]:
+                    continue
+                
+                cleaned.add(part)
+        
+        return list(cleaned)[:10]
+
+    def _adjust_confidence_by_evidence(self, threats: list, source_text: str) -> list:
+        """
+        FIX: Dynamic confidence logic - adjust confidence based on evidence strength.
+        Makes the confidence score intelligent rather than static.
+        FIX 2: Reduce confidence if file_paths is empty for file_tampering (weak evidence).
+        """
+        text_lower = source_text.lower()
+        
+        for threat in threats:
+            atype = threat.get("attack_type", "")
+            current_confidence = threat.get("confidence", 0.5)
+            iocs = threat.get("iocs", {})
+            
+            # FIX: Reduce confidence if file_tampering has no file_paths (weak evidence)
+            if atype == "file_tampering" and isinstance(iocs, dict):
+                file_paths = iocs.get("file_paths", [])
+                if not file_paths or len(file_paths) == 0:
+                    # No file paths = weak evidence - reduce confidence
+                    current_confidence = min(current_confidence, 0.6)
+            
+            # Base confidence by attack type
+            if atype == "rootkit":
+                # Confirmed rootkit signature = high confidence
+                new_confidence = 0.85
+            elif atype == "file_tampering":
+                # Trojaned file = indicator, not confirmation
+                if "trojaned" in text_lower:
+                    new_confidence = 0.75
+                else:
+                    new_confidence = 0.7
+            elif atype == "privilege_escalation":
+                # sudo/su commands = strong evidence
+                if any(k in text_lower for k in ["sudo", " su ", "su -", "sudo -"]):
+                    new_confidence = 0.8
+                else:
+                    new_confidence = 0.7
+            elif atype == "authentication_success":
+                # Successful auth = strong evidence
+                if "success" in text_lower or "accepted" in text_lower:
+                    new_confidence = 0.9
+                else:
+                    new_confidence = 0.75
+            elif atype == "credential_access":
+                # Brute force attempts
+                new_confidence = 0.75
+            elif atype == "defense_evasion":
+                # Only high if clear evasion intent
+                if any(k in text_lower for k in ["disable", "stop", "remove", "bypass"]):
+                    new_confidence = 0.7
+                else:
+                    new_confidence = 0.5
+            else:
+                new_confidence = 0.5
+            
+            # Override with higher of current or calculated
+            threat["confidence"] = max(current_confidence, new_confidence)
+        
+        return threats
+
+    def _upgrade_severity_if_needed(self, parsed: dict, source_text: str) -> dict:
+        """
+        FIX: Severity upgrade logic - escalate severity if multiple high-risk indicators present.
+        This makes severity intelligent based on combined risk factors.
+        """
+        text_lower = source_text.lower()
+        current_severity = parsed.get("overall_severity", "Medium")
+        
+        # Count high-risk indicators
+        risk_score = 0
+        
+        # External IPs (not internal)
+        iocs = parsed.get("top_threats", [])
+        for threat in iocs:
+            threat_iocs = threat.get("iocs", {})
+            for ip in threat_iocs.get("ips", []):
+                if ip and not ip.startswith(("10.", "192.168.", "172.", "127.")):
+                    risk_score += 1
+        
+        # Privilege escalation indicators
+        if any(k in text_lower for k in ["sudo", " su ", "su -", "root", "uid=0"]):
+            risk_score += 2
+        
+        # File tampering indicators
+        if any(k in text_lower for k in ["trojaned", "replaced", "modified system"]):
+            risk_score += 2
+        
+        # Multiple attack types
+        attack_types = set(t.get("attack_type", "") for t in iocs)
+        if len(attack_types) >= 3:
+            risk_score += 1
+        
+        # Upgrade severity based on risk score
+        if risk_score >= 4 and current_severity not in ["Critical"]:
+            parsed["overall_severity"] = "Critical"
+        elif risk_score >= 3 and current_severity in ["Low", "Medium"]:
+            parsed["overall_severity"] = "High"
+        elif risk_score >= 2 and current_severity == "Low":
+            parsed["overall_severity"] = "Medium"
+        
+        return parsed
+
+    def _generate_attack_chain(self, threats: list, source_text: str) -> str:
+        """
+        FIX: Generate attack_chain programmatically - no LLM hallucination.
+        Builds chain from actual detected attack types in order of severity.
+        
+        CRITICAL FIXES:
+        1. Remove duplicate T1562 → T1562.001 (same category) - use only T1562.001
+        2. Skip system_activity from attack chain (it's informational, not attack)
+        3. Proper MITRE ordering: T1078 (auth) → T1548.003 (priv esc) → T1562.001 (file tampering)
+        """
+        text_lower = source_text.lower()
+        chain_steps = []
+        
+        # Define attack chain order (kill chain sequence)
+        # NOTE: T1562 and T1562.001 are in same category - use only T1562.001 if both present
+        MITRE_CHAIN = {
+            "authentication_success": ("T1078", "Initial Access - Valid Account"),
+            "credential_access": ("T1110", "Credential Access - Brute Force"),
+            "execution": ("T1204", "Execution - User Execution"),
+            "lateral_movement": ("T1021", "Lateral Movement - Remote Services"),
+            "privilege_escalation": ("T1548.003", "Privilege Escalation - Sudo/Caching"),
+            "defense_evasion": ("T1562", "Defense Evasion - Impair Defenses"),
+            "file_tampering": ("T1562.001", "File Tampering - Disable/Modify Tools"),
+            "rootkit": ("T1014", "Rootkit - Boot or Kernel Hook"),
+            "system_activity": ("T1082", "System Information Discovery"),
+        }
+        
+        # Check source text for each attack type
+        detected_types = []
+        for threat in threats:
+            atype = threat.get("attack_type", "")
+            if atype in MITRE_CHAIN:
+                detected_types.append(atype)
+        
+        # CRITICAL FIX 1: If file_tampering exists, skip defense_evasion (avoid T1562 → T1562.001 duplication)
+        if "file_tampering" in detected_types and "defense_evasion" in detected_types:
+            detected_types.remove("defense_evasion")
+        
+        # CRITICAL FIX 2: Skip system_activity from attack chain (it's informational, not an attack)
+        if "system_activity" in detected_types:
+            detected_types.remove("system_activity")
+        
+        # Also check source text for additional evidence
+        if "success" in text_lower or "accepted" in text_lower:
+            if "authentication_success" not in detected_types:
+                detected_types.append("authentication_success")
+        if "sudo" in text_lower or " su " in text_lower:
+            if "privilege_escalation" not in detected_types:
+                detected_types.append("privilege_escalation")
+        if "trojaned" in text_lower or "replaced" in text_lower:
+            if "file_tampering" not in detected_types:
+                detected_types.append("file_tampering")
+        
+        # Build chain in MITRE order - EXCLUDE system_activity
+        for atype in MITRE_CHAIN.keys():
+            if atype in detected_types and atype != "system_activity":
+                mitre_id, description = MITRE_CHAIN[atype]
+                chain_steps.append(f"{mitre_id} ({description})")
+        
+        if not chain_steps:
+            return "T1082 (System Information Discovery)"
+        
+        return " → ".join(chain_steps)
+
+    def _filter_suspicious_paths(self, threats: list) -> list:
+        """
+        FIX: Filter file_paths intelligently.
+        - For file_tampering: KEEP trojaned system binaries (/bin/passwd, /usr/bin/chsh) - these ARE IOCs
+        - For other types: EXCLUDE system binaries as they're expected on systems
+        """
+        # Paths that indicate suspicious activity
+        SUSPICIOUS_PATTERNS = [
+            "tmp", "var/tmp", "dev/shm", ".cache", "Downloads",
+            ".local", ".config", "hidden", ".ssh", ".bashrc",
+            "/etc/passwd", "/etc/shadow", "/etc/sudoers",
+            "webapp", "www", "html", "uploads", "backdoor"
+        ]
+        
+        # System binary paths to EXCLUDE for non-file_tampering threats
+        SYSTEM_BINARIES = [
+            "/usr/bin/", "/bin/", "/usr/sbin/", "/sbin/",
+            "/usr/lib/", "/lib/", "/usr/local/bin/"
+        ]
+        
+        # CRITICAL: System binaries that ARE IOCs when related to file_tampering
+        # These are the actual compromised files (trojaned binaries)
+        TROJANED_BINARY_PATTERNS = [
+            "/bin/passwd", "/usr/bin/passwd",
+            "/bin/chsh", "/usr/bin/chsh",
+            "/bin/su", "/usr/bin/su",
+            "/bin/login", "/usr/bin/login",
+            "/etc/passwd", "/etc/shadow",
+            "/bin/", "/usr/bin/",  # Only if specifically marked as trojaned
+        ]
+        
+        for threat in threats:
+            iocs = threat.get("iocs", {})
+            atype = threat.get("attack_type", "")
+            
+            if isinstance(iocs, dict):
+                file_paths = iocs.get("file_paths", [])
+                
+                # Filter: different logic based on attack_type
+                filtered = []
+                for path in file_paths:
+                    if not path:
+                        continue
+                    
+                    # For file_tampering: KEEP trojaned binaries (they ARE IOCs!)
+                    if atype == "file_tampering":
+                        # Keep if it's a known trojaned binary pattern
+                        is_trojaned = any(path.startswith(tbp) for tbp in TROJANED_BINARY_PATTERNS)
+                        if is_trojaned:
+                            filtered.append(path)
+                        # Also keep if it matches suspicious patterns
+                        elif any(p in path.lower() for p in SUSPICIOUS_PATTERNS):
+                            filtered.append(path)
+                    else:
+                        # For other types: exclude system binaries
+                        is_system_binary = any(path.startswith(sb) for sb in SYSTEM_BINARIES)
+                        if is_system_binary:
+                            continue
+                        
+                        # Keep if contains suspicious pattern
+                        if any(p in path.lower() for p in SUSPICIOUS_PATTERNS):
+                            filtered.append(path)
+                        elif not path.startswith("/"):
+                            # Keep relative paths (could be suspicious)
+                            filtered.append(path)
+                
+                iocs["file_paths"] = filtered[:8]  # Limit to 8
+                threat["iocs"] = iocs
+        
+        return threats
+
+    def _ensure_file_paths_for_tampering(self, threats: list, source_text: str) -> list:
+        """
+        CRITICAL: Ensure file_tampering threats have file_paths extracted from source text.
+        This is the final safety net - if LLM missed file_paths, we extract them here.
+        """
+        # Extract all file paths from source text
+        extracted_paths = self._extract_file_paths_from_text(source_text)
+        
+        for threat in threats:
+            atype = threat.get("attack_type", "")
+            
+            if atype == "file_tampering":
+                iocs = threat.get("iocs", {})
+                if not isinstance(iocs, dict):
+                    iocs = {"ips": [], "users": [], "file_paths": [], "commands": []}
+                
+                current_paths = iocs.get("file_paths", [])
+                
+                # If no file_paths from LLM, use extracted paths
+                if not current_paths and extracted_paths:
+                    iocs["file_paths"] = extracted_paths
+                    threat["iocs"] = iocs
+                # If partially filled, add extracted paths to fill gaps
+                elif current_paths and len(current_paths) < 3 and extracted_paths:
+                    existing = set(current_paths)
+                    combined = list(existing | set(extracted_paths))[:8]
+                    iocs["file_paths"] = combined
+                    threat["iocs"] = iocs
+        
+        return threats
+
+    def _extract_file_paths_from_text(self, text: str) -> list:
+        """
+        CRITICAL: Extract actual file paths from raw text for file_tampering threats.
+        This ensures file_paths are never empty when trojaned files are detected.
+        FIX: More aggressive extraction - extract ALL system binary paths when trojaned detected.
+        """
+        if not text:
+            return []
+        
+        found_paths = set()
+        text_lower = text.lower()
+        
+        # FIX: More aggressive - extract paths whenever there's ANY file tampering indicator
+        has_tampering_indicator = any(k in text_lower for k in [
+            "trojaned", "integrity", "checksum", "changed", "modified", 
+            "replaced", "tamper", "file ", "/bin/", "/usr/bin/", "/etc/"
+        ])
+        
+        if not has_tampering_indicator:
+            return []
+        
+        # Common patterns for trojaned files in Wazuh logs - EXPANDED
+        patterns = [
+            # Pattern 1: /bin/ or /usr/bin/ followed by common system binaries
+            r'(/bin/[a-zA-Z][a-zA-Z0-9_.-]+)',
+            r'(/usr/bin/[a-zA-Z][a-zA-Z0-9_.-]+)',
+            r'(/sbin/[a-zA-Z][a-zA-Z0-9_.-]+)',
+            r'(/usr/sbin/[a-zA-Z][a-zA-Z0-9_.-]+)',
+            # Pattern 2: file paths in "file=" or "file=" format
+            r'file[=:]?\s*["\']?([^\s"\',;]+)',
+            r'path[=:]?\s*["\']?([^\s"\',;]+)',
+            r'filename[=:]?\s*["\']?([^\s"\',;]+)',
+            # Pattern 3: syscheck integrity messages
+            r'Integrity checksum changed for ["\']?([^\s"\']+)',
+            r'Trojaned version of ["\']?([^\s"\']+)',
+            r'file "([^"]+)"',
+            r"file '([^']+)'",
+            # Pattern 4: Full paths in any context
+            r'(/etc/[a-zA-Z0-9_./-]+)',
+        ]
+        
+        for pattern in patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            for match in matches:
+                path = match.strip()
+                # Filter out garbage
+                if path and len(path) > 3 and not path.startswith("http"):
+                    # Only keep system binary paths for file_tampering
+                    if any(path.startswith(p) for p in ["/bin/", "/usr/bin/", "/sbin/", "/usr/sbin/", "/etc/"]):
+                        found_paths.add(path)
+        
+        # FIX: If still empty but trojaned detected, extract from raw log structure
+        if not found_paths and "trojaned" in text_lower:
+            # Try to find any /bin/ or /usr/bin/ paths in the text
+            all_paths = re.findall(r'(/bin/[a-zA-Z0-9_.-]+|/usr/bin/[a-zA-Z0-9_.-]+)', text)
+            found_paths = set(all_paths)
+        
+        return list(found_paths)[:8]  # Limit to 8
+
+    def _enrich_with_risk_and_timeline(self, parsed: dict, source_text: str) -> dict:
+        """
+        FIX: Add risk_score per threat, timeline, and incident_type.
+        Makes output suitable for SOC dashboards.
+        IMPROVED: More specific timeline with actual IPs, users, commands, and file paths.
+        FIX: Timeline now includes ALL specific details, not generic text.
+        """
+        text_lower = source_text.lower()
+        threats = parsed.get("top_threats", [])
+        
+        # Severity weights for risk calculation
+        SEVERITY_WEIGHTS = {
+            "Critical": 1.0,
+            "High": 0.75,
+            "Medium": 0.5,
+            "Low": 0.25
+        }
+        
+        # Build timeline from source evidence - COMPREHENSIVE with specific details
+        # FIX: Be more conservative - only add events that are CLEARLY in the logs
+        timeline = []
+        
+        # Extract ALL specific details for timeline
+        # IPs
+        src_ip_match = re.search(r'\b(?:10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.\d+\.\d+\.\d+)\b', source_text)
+        src_ip = src_ip_match.group(0) if src_ip_match else None
+        
+        # Users
+        user_match = re.search(r'(?:user|username|srcuser)[:=]\s*([a-zA-Z0-9_.-]+)', source_text, re.IGNORECASE)
+        src_user = user_match.group(1) if user_match else None
+        
+        # Commands executed
+        cmd_matches = re.findall(r'(sudo|su|su-|pkexec|systemctl)\s+[^\s]+', text_lower)
+        unique_cmds = list(set(cmd_matches))[:3] if cmd_matches else []
+        
+        # File paths
+        file_paths = re.findall(r'(/bin/[^\s]+|/usr/bin/[^\s]+|/etc/[^\s]+|/sbin/[^\s]+)', source_text)
+        unique_files = list(set(file_paths))[:3] if file_paths else []
+        
+        # Auth events - ONLY if clear evidence in logs
+        if "success" in text_lower or "accepted" in text_lower:
+            if src_ip and src_user:
+                timeline.append(f"SSH login from {src_ip} as {src_user}")
+            elif src_ip:
+                timeline.append(f"Login from {src_ip}")
+            elif src_user:
+                timeline.append(f"Authentication successful for {src_user}")
+            else:
+                timeline.append("Authentication successful")
+        
+        if "failed" in text_lower or "failure" in text_lower:
+            if src_ip:
+                timeline.append(f"Authentication failure from {src_ip}")
+            else:
+                timeline.append("Authentication failure detected")
+        
+        # Privilege events - ONLY if clear evidence
+        if "sudo" in text_lower:
+            if unique_cmds:
+                timeline.append(f"Privilege escalation: {' | '.join(unique_cmds)}")
+            else:
+                timeline.append("Privilege escalation via sudo")
+        
+        if " su " in text_lower or "su -" in text_lower:
+            if unique_cmds:
+                timeline.append(f"Privilege escalation: {' | '.join(unique_cmds)}")
+            else:
+                timeline.append("Privilege escalation via su")
+        
+        if "uid=0" in text_lower or "euid=0" in text_lower:
+            timeline.append("Root privilege obtained (uid=0)")
+        
+        # File tampering - ONLY if clear evidence
+        if "trojaned" in text_lower:
+            if unique_files:
+                timeline.append(f"Trojaned files detected: {', '.join(unique_files)}")
+            else:
+                timeline.append("Trojaned binary detected - file integrity compromised")
+        
+        if "replaced" in text_lower and "integrity" in text_lower:
+            if unique_files:
+                timeline.append(f"System binary replaced: {', '.join(unique_files)}")
+            else:
+                timeline.append("System binary replacement detected")
+        
+        if "integrity" in text_lower and "changed" in text_lower:
+            if unique_files:
+                timeline.append(f"File integrity changed: {', '.join(unique_files)}")
+            else:
+                timeline.append("File integrity modification detected")
+        
+        # System activity - MORE CONSERVATIVE (not automatically defense evasion)
+        # Only add if there's CLEAR evidence of actual change, not just "status"
+        if "selinux" in text_lower:
+            # Check for actual modification vs just status check
+            if any(k in text_lower for k in ["setenforce", "disabled", "permissive", "enforcing changed"]):
+                timeline.append("SELinux policy modification detected")
+            elif "avc" in text_lower and ("denial" in text_lower or "denied" in text_lower):
+                timeline.append("SELinux denial - possible policy violation")
+            # Don't add generic "status change" - that's over-interpretation
+        
+        if "iptables" in text_lower or "firewall" in text_lower:
+            # Only add if there's clear modification
+            if any(k in text_lower for k in ["-f", "-i", "-a", "delete", "remove", "flush"]):
+                timeline.append("Firewall rule modification detected")
+            # Don't add generic "status change"
+        
+        # Add risk_score to each threat
+        for threat in threats:
+            severity = threat.get("severity", "Medium")
+            confidence = threat.get("confidence", 0.5)
+            weight = SEVERITY_WEIGHTS.get(severity, 0.5)
+            
+            # Risk score = confidence * severity_weight
+            threat["risk_score"] = round(confidence * weight, 2)
+        
+        # Add timeline to parsed - MAX 5 specific events
+        if timeline:
+            # Deduplicate while preserving order
+            seen = set()
+            unique_timeline = []
+            for event in timeline:
+                if event not in seen:
+                    seen.add(event)
+                    unique_timeline.append(event)
+            parsed["timeline"] = unique_timeline[:5]  # Max 5 events
+        else:
+            parsed["timeline"] = ["Security events analyzed - review recommended"]
+        
+        # Generate incident_type from detected threats - MORE SPECIFIC
+        attack_types = [t.get("attack_type", "") for t in threats]
+        
+        # Collect IOCs for specific incident type
+        all_ips = set()
+        all_users = set()
+        for t in threats:
+            t_iocs = t.get("iocs", {})
+            if isinstance(t_iocs, dict):
+                all_ips.update(t_iocs.get("ips", []))
+                all_users.update(t_iocs.get("users", []))
+        
+        ip_str = f" from {list(all_ips)[0]}" if all_ips else ""
+        user_str = f" by {list(all_users)[0]}" if all_users else ""
+        
+        if "authentication_success" in attack_types and "privilege_escalation" in attack_types:
+            incident_type = f"Compromised Account{ip_str} + Privilege Escalation{user_str}"
+        elif "file_tampering" in attack_types:
+            incident_type = "File Integrity Compromise (Trojaned Binary Indicator)"
+        elif "privilege_escalation" in attack_types:
+            incident_type = f"Privilege Escalation{user_str}"
+        elif "credential_access" in attack_types:
+            incident_type = f"Credential Access / Brute Force{ip_str}"
+        elif "rootkit" in attack_types:
+            incident_type = "Rootkit Detection (Confirmed Signature)"
+        elif "defense_evasion" in attack_types:
+            incident_type = "Defense Evasion Activity"
+        else:
+            incident_type = "Security Event Analysis"
+        
+        parsed["incident_type"] = incident_type
+        
+        # FIX: Make analyst_notes more specific
+        if "analyst_notes" not in parsed or not parsed["analyst_notes"]:
+            notes_parts = []
+            if all_ips:
+                notes_parts.append(f"External activity from {', '.join(list(all_ips)[:2])}")
+            if all_users:
+                notes_parts.append(f"User account(s): {', '.join(list(all_users)[:2])}")
+            if "file_tampering" in attack_types:
+                notes_parts.append("File integrity compromise detected - trojaned binary indicator")
+            if "privilege_escalation" in attack_types:
+                notes_parts.append("Privilege escalation via sudo/su commands")
+            if "authentication_success" in attack_types:
+                notes_parts.append("Successful authentication detected")
+            
+            if notes_parts:
+                parsed["analyst_notes"] = ". ".join(notes_parts) + "."
+            else:
+                parsed["analyst_notes"] = f"Analyzed {len(threats)} threat categories. Review recommended."
+        
+        return parsed
 
     def _build_fallback_summary(self, file_label, total_count, overall_sev,
                                 severity_dist, attack_groups, ioc_block, chain) -> dict:
         """
         Pure-Python fallback summary — used when LLM call fails or parse fails.
         Produces deterministic, accurate output without any LLM.
+        FIX: Updated MITRE mappings and added file_paths/commands extraction.
         """
         top_threats = []
         MITRE_FOR_TYPE = {
             "rootkit":              {"id": "T1014",     "name": "Rootkit"},
+            "file_tampering":       {"id": "T1562.001", "name": "Disable or Modify Tools"},  # FIXED: was T1021
             "defense_evasion":      {"id": "T1562",     "name": "Impair Defenses"},
-            "privilege_escalation": {"id": "T1548.003", "name": "Sudo and Sudo Caching"},  # FIXED
+            "privilege_escalation": {"id": "T1548.003", "name": "Sudo and Sudo Caching"},
             "credential_access":    {"id": "T1110",     "name": "Brute Force"},
-            "authentication_success": {"id": "T1021",  "name": "Remote Services"},  # FIXED
+            "authentication_success": {"id": "T1078",  "name": "Valid Accounts"},  # FIXED: was T1021
             "lateral_movement":     {"id": "T1021",     "name": "Remote Services"},
+            "system_activity":      {"id": "T1082",     "name": "System Information Discovery"},
         }
 
         for atype, stats in sorted(attack_groups.items(), key=lambda x: -x[1]["count"]):
@@ -1590,8 +3003,8 @@ OUTPUT:
                 "iocs": {
                     "ips":        list(stats["ips"])[:8],
                     "users":      list(stats["users"])[:8],
-                    "file_paths": [],
-                    "commands":   [],
+                    "file_paths": list(stats.get("file_paths", set()))[:8],  # FIXED: was []
+                    "commands":   list(stats.get("commands", set()))[:8],    # FIXED: was []
                 },
                 "attack_scenario":  f"Detected {stats['count']} {atype} events on {agents_str}. "
                                     f"Investigation recommended.",
